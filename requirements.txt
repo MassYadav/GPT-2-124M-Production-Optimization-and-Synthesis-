@@ -1,1 +1,13 @@
-ment
+torch
+torchvision
+torchaudio
+transformers
+datasets
+tokenizers
+accelerate
+numpy
+tqdm
+wandb
+matplotlib
+scipy
+sentencepiece
