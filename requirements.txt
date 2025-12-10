@@ -11,3 +11,5 @@ wandb
 matplotlib
 scipy
 sentencepiece
+tiktoken     # <--- ADD THIS
+requests     # <--- ADD THIS
