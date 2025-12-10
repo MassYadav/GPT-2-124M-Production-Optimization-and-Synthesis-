@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from hellaswag import render_example, iterate_examples
+import tiktoken          # ← ADD THIS LINE
+
 # -----------------------------------------------------------------------------
 
 class CausalSelfAttention(nn.Module):
@@ -202,54 +204,41 @@ class GPT(nn.Module):
         return optimizer
 
 # -----------------------------------------------------------------------------
-import tiktoken
 import numpy as np
+import torch
 
 def load_tokens(filename):
-    npt = np.load(filename)
-    npt = npt.astype(np.int32) # added after video
-    ptt = torch.tensor(npt, dtype=torch.long)
-    return ptt
-
+    npt = np.fromfile(filename, dtype=np.uint16)  # matches prepare.py
+    npt = npt.astype(np.int32)
+    return torch.tensor(npt, dtype=torch.long)
 class DataLoaderLite:
     def __init__(self, B, T, process_rank, num_processes, split):
         self.B = B
         self.T = T
-        self.process_rank = process_rank
-        self.num_processes = num_processes
-        assert split in {'train', 'val'}
+        assert split in {"train", "val"}
 
-        # get the shard filenames
-        data_root = "edu_fineweb10B"
-        shards = os.listdir(data_root)
-        shards = [s for s in shards if split in s]
-        shards = sorted(shards)
-        shards = [os.path.join(data_root, s) for s in shards]
-        self.shards = shards
-        assert len(shards) > 0, f"no shards found for split {split}"
-        if master_process:
-            print(f"found {len(shards)} shards for split {split}")
-        self.reset()
+        data_file = f"data/{split}.bin"
+        assert os.path.exists(data_file), f"{data_file} not found. Run prepare.py first."
+
+        self.tokens = load_tokens(data_file)
+        self.num_tokens = self.tokens.numel()
+        self.current_position = 0
 
     def reset(self):
-        # state, init at shard zero
-        self.current_shard = 0
-        self.tokens = load_tokens(self.shards[self.current_shard])
-        self.current_position = self.B * self.T * self.process_rank
+        self.current_position = 0
 
     def next_batch(self):
         B, T = self.B, self.T
-        buf = self.tokens[self.current_position : self.current_position+B*T+1]
-        x = (buf[:-1]).view(B, T) # inputs
-        y = (buf[1:]).view(B, T) # targets
-        # advance the position in the tensor
-        self.current_position += B * T * self.num_processes
-        # if loading the next batch would be out of bounds, advance to next shard
-        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
-            self.current_shard = (self.current_shard + 1) % len(self.shards)
-            self.tokens = load_tokens(self.shards[self.current_shard])
-            self.current_position = B * T * self.process_rank
+        # always get B*T+1 tokens using wrap-around
+        idx = (torch.arange(B * T + 1, dtype=torch.long) + self.current_position) % self.num_tokens
+        buf = self.tokens[idx]
+        x = buf[:-1].view(B, T)
+        y = buf[1:].view(B, T)
+        self.current_position = (self.current_position + B * T) % self.num_tokens
         return x, y
+
+
+
 
 # -----------------------------------------------------------------------------
 # helper function for HellaSwag eval
@@ -321,8 +310,8 @@ if torch.cuda.is_available():
 
 enc = tiktoken.get_encoding("gpt2")
 
-total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
-B = 64 # micro batch size
+total_batch_size =  32768  # 2**19, ~0.5M, in number of tokens
+B = 4 # micro batch size
 T = 1024 # sequence length
 assert total_batch_size % (B * T * ddp_world_size) == 0, "make sure total_batch_size is divisible by B * T * ddp_world_size"
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
